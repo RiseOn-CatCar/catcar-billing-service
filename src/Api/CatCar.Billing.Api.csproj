@@ -1,0 +1,20 @@
+<Project Sdk="Microsoft.NET.Sdk.Web">
+  <ItemGroup>
+    <PackageReference Include="WolverineFx.Marten" />
+    <PackageReference Include="WolverineFx.RabbitMQ" />
+    <PackageReference Include="WolverineFx.RuntimeCompilation" />
+    <PackageReference Include="Microsoft.AspNetCore.Authentication.JwtBearer" />
+    <PackageReference Include="Azure.Communication.Email" />
+    <PackageReference Include="RiseOn.ResultRail" />
+  </ItemGroup>
+  <ItemGroup>
+    <ProjectReference Include="../SharedKernel/CatCar.SharedKernel.csproj" />
+    <ProjectReference Include="../Host/CatCar.ServiceDefaults/CatCar.ServiceDefaults.csproj" />
+    <Compile Include="../Contexts/ServiceOperations/Domain/Budgets/Budget*.cs" />
+    <Compile Include="../Contexts/Communication/Domain/ExternalAccessTokens/ExternalAccessToken*.cs" />
+    <Compile Include="../Contexts/Communication/Notifications/IEmailSender.cs" />
+    <Compile Include="../Contexts/Communication/Notifications/LoggingEmailSender.cs" />
+    <Compile Include="../Contexts/Communication/Notifications/MailpitEmailSender.cs" />
+    <Compile Include="../Contexts/Communication/Notifications/AzureCommunicationEmailSender.cs" />
+  </ItemGroup>
+</Project>

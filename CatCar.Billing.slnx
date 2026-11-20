@@ -1,0 +1,7 @@
+<Solution>
+  <Project Path="src/Api/CatCar.Billing.Api.csproj" />
+  <Project Path="src/SharedKernel/CatCar.SharedKernel.csproj" />
+  <Project Path="src/Host/CatCar.ServiceDefaults/CatCar.ServiceDefaults.csproj" />
+  <Project Path="tests/CatCar.Billing.Tests/CatCar.Billing.Tests.csproj" />
+  <Project Path="tests/SharedKernel.Tests/CatCar.SharedKernel.Tests.csproj" />
+</Solution>

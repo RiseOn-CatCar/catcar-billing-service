@@ -1,0 +1,155 @@
+name: CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+env:
+  DOTNET_VERSION: '11.0.100'
+
+jobs:
+  build-test:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-dotnet@v4
+        with:
+          dotnet-version: ${{ env.DOTNET_VERSION }}
+      - run: dotnet restore CatCar.Billing.slnx
+      - run: dotnet format whitespace CatCar.Billing.slnx --verify-no-changes --no-restore
+      - run: dotnet build CatCar.Billing.slnx -c Release --no-restore
+      - name: Test with OpenCover
+        run: dotnet test CatCar.Billing.slnx -c Release --no-build --collect:"XPlat Code Coverage" --results-directory TestResults -- DataCollectionRunSettings.DataCollectors.DataCollector.Configuration.Format=opencover
+      - name: Enforce 80 percent service line coverage
+        run: |
+          python3 - <<'PY'
+          import glob
+          import os
+          import sys
+          import xml.etree.ElementTree as ET
+
+          reports = glob.glob('TestResults/**/coverage.opencover.xml', recursive=True)
+          if not reports:
+              sys.exit('No OpenCover reports found')
+          lines = {}
+          for report in reports:
+              root = ET.parse(report).getroot()
+              for module in root.findall('.//Module'):
+                  files = {f.get('uid'): f.get('fullPath', '').replace('\\', '/') for f in module.findall('./Files/File')}
+                  for method in module.findall('.//Method'):
+                      ref = method.find('./FileRef')
+                      if ref is None:
+                          continue
+                      path = files.get(ref.get('uid'), '')
+                      lower = path.lower()
+                      if '/src/' not in lower or '/obj/' in lower or '/migrations/' in lower or os.path.basename(lower) == 'program.cs' or lower.endswith(('.g.cs', '.generated.cs', '.designer.cs')):
+                          continue
+                      for point in method.findall('./SequencePoints/SequencePoint'):
+                          line = point.get('sl')
+                          if line is not None and line != '16707566':
+                              key = (path, line)
+                              lines[key] = lines.get(key, False) or int(point.get('vc', '0')) > 0
+          if not lines:
+              sys.exit('No service source lines found in coverage reports')
+          covered = sum(lines.values())
+          percent = 100 * covered / len(lines)
+          print(f'Service line coverage: {covered}/{len(lines)} ({percent:.2f}%)')
+          if percent < 80:
+              sys.exit('Service line coverage is below 80%')
+          PY
+      - name: Upload coverage
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: coverage-report
+          path: TestResults/**/coverage.opencover.xml
+          if-no-files-found: warn
+
+  sonar:
+    runs-on: ubuntu-latest
+    needs: build-test
+    env:
+      SONAR_TOKEN: ${{ secrets.SONAR_TOKEN }}
+    steps:
+      - uses: actions/checkout@v4
+        if: env.SONAR_TOKEN != ''
+        with:
+          fetch-depth: 0
+      - uses: actions/setup-dotnet@v4
+        if: env.SONAR_TOKEN != ''
+        with:
+          dotnet-version: ${{ env.DOTNET_VERSION }}
+      - uses: actions/download-artifact@v4
+        if: env.SONAR_TOKEN != ''
+        with:
+          name: coverage-report
+          path: coverage
+      - name: Analyze and wait for quality gate
+        if: env.SONAR_TOKEN != ''
+        run: |
+          dotnet tool install --global dotnet-sonarscanner
+          dotnet sonarscanner begin /k:"riseon_catcar-billing-service" /o:"riseon" /d:sonar.token="$SONAR_TOKEN" /d:sonar.qualitygate.wait=true /d:sonar.cs.opencover.reportsPaths="coverage/**/coverage.opencover.xml" /d:sonar.coverage.exclusions="**/Migrations/**,**/Program.cs,**/*.g.cs,**/*.generated.cs"
+          dotnet build CatCar.Billing.slnx -c Release
+          dotnet sonarscanner end /d:sonar.token="$SONAR_TOKEN"
+
+  security:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-dotnet@v4
+        with:
+          dotnet-version: ${{ env.DOTNET_VERSION }}
+      - name: Install Opengrep
+        run: |
+          curl --proto '=https' --tlsv1.2 -fsSL https://github.com/opengrep/opengrep/releases/download/v1.28.0/opengrep_manylinux_x86 -o "$RUNNER_TEMP/opengrep"
+          echo "85af2f34e5175995acbc431e1ca733e34062aad9640ad4308422abe1968b84cf  $RUNNER_TEMP/opengrep" | sha256sum -c -
+          chmod +x "$RUNNER_TEMP/opengrep"
+      - name: Opengrep scan
+        run: '"$RUNNER_TEMP/opengrep" scan --config p/csharp --config p/security-audit --error .'
+      - run: dotnet restore CatCar.Billing.slnx
+      - name: Check vulnerable NuGet packages
+        run: |
+          dotnet package list --project CatCar.Billing.slnx --vulnerable --include-transitive --format json --output-version 1 --no-restore > nuget-vulnerabilities.json
+          jq -e '[.projects[]?.frameworks[]? | (.topLevelPackages[]?, .transitivePackages[]?) | .vulnerabilities[]? | select(.severity == "Critical" or .severity == "High")] | length == 0' nuget-vulnerabilities.json
+      - run: docker build -t catcar-billing-service:ci .
+      - name: Scan container image
+        uses: aquasecurity/trivy-action@ed142fd0673e97e23eac54620cfb913e5ce36c25
+        with:
+          image-ref: catcar-billing-service:ci
+          format: table
+          exit-code: '1'
+          severity: CRITICAL,HIGH
+
+  deploy-kind:
+    if: github.event_name == 'pull_request' || (github.event_name == 'push' && github.ref == 'refs/heads/main')
+    runs-on: ubuntu-latest
+    needs: build-test
+    steps:
+      - uses: actions/checkout@v4
+      - uses: helm/kind-action@v1
+      - name: Build and load image
+        run: |
+          docker build -t catcar-billing-service:ci .
+          kind load docker-image catcar-billing-service:ci --name chart-testing
+      - name: Deploy dependencies and service
+        run: |
+          kubectl apply -k k8s/overlays/ci
+          kubectl rollout status deployment/postgres --timeout=180s
+          kubectl rollout status deployment/rabbitmq --timeout=180s
+          kubectl wait --for=condition=complete job/billing-service-migration --timeout=300s
+          kubectl rollout status deployment/billing-service --timeout=300s
+      - name: Smoke test
+        run: |
+          kubectl port-forward service/billing-service 18080:8080 > "$RUNNER_TEMP/port-forward.log" 2>&1 &
+          for attempt in $(seq 1 30); do
+            if curl --fail --silent http://127.0.0.1:18080/health/ready; then break; fi
+            if [ "$attempt" -eq 30 ]; then cat "$RUNNER_TEMP/port-forward.log"; exit 1; fi
+            sleep 2
+          done
+          status=$(curl --silent --output /dev/null --write-out '%{http_code}' http://127.0.0.1:18080/api/v1/billing/approval-links/nonexistent)
+          if [ "$status" -lt 200 ] || [ "$status" -ge 500 ]; then echo "Unexpected public endpoint status: $status"; exit 1; fi
