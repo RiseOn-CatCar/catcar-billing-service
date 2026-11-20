@@ -123,6 +123,4 @@ billing.MapPost("/approval-links/{raw}", async (string raw, ApprovalDecision dec
 });
 await app.RunAsync().ConfigureAwait(false);
 
-public sealed record ApprovalDecision(bool Approved, string? Reason);
-
 public partial class Program;
