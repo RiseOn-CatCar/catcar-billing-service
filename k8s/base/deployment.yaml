@@ -1,0 +1,77 @@
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: billing-service
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app: billing-service
+  template:
+    metadata:
+      labels:
+        app: billing-service
+    spec:
+      securityContext:
+        runAsNonRoot: true
+        runAsUser: 1654
+        seccompProfile:
+          type: RuntimeDefault
+      containers:
+        - name: billing-service
+          image: catcar-billing-service:ci
+          imagePullPolicy: IfNotPresent
+          ports:
+            - name: http
+              containerPort: 8080
+          envFrom:
+            - configMapRef:
+                name: billing-service-config
+            - secretRef:
+                name: billing-service-secrets
+          env:
+            - name: MercadoPago__AccessToken
+              valueFrom:
+                secretKeyRef:
+                  name: billing-service-secrets
+                  key: MercadoPago__AccessToken
+                  optional: true
+            - name: MercadoPago__WebhookSecret
+              valueFrom:
+                secretKeyRef:
+                  name: billing-service-secrets
+                  key: MercadoPago__WebhookSecret
+                  optional: true
+            - name: MercadoPago__NotificationUrl
+              valueFrom:
+                secretKeyRef:
+                  name: billing-service-secrets
+                  key: MercadoPago__NotificationUrl
+                  optional: true
+          readinessProbe:
+            httpGet:
+              path: /health/ready
+              port: http
+            periodSeconds: 5
+          livenessProbe:
+            httpGet:
+              path: /health/live
+              port: http
+            initialDelaySeconds: 15
+          startupProbe:
+            httpGet:
+              path: /health/live
+              port: http
+            failureThreshold: 60
+            periodSeconds: 5
+          resources:
+            requests:
+              cpu: 100m
+              memory: 256Mi
+            limits:
+              cpu: '1'
+              memory: 512Mi
+          securityContext:
+            allowPrivilegeEscalation: false
+            capabilities:
+              drop: [ALL]
