@@ -41,7 +41,7 @@ public static class BudgetHandlers
     {
         var budget = await session.LoadAsync<Budget>(message.BudgetId, cancellationToken).ConfigureAwait(false);
         if (budget is null || budget.WorkOrderId != message.WorkOrderId) return;
-        _ = budget.Replace();
+        _ = budget.Cancel();
         var tokens = await session.Query<ExternalAccessToken>().Where(x => x.BudgetId == message.BudgetId).ToListAsync(cancellationToken).ConfigureAwait(false);
         foreach (var token in tokens) { _ = token.Expire(); session.Store(token); }
         session.Store(budget);

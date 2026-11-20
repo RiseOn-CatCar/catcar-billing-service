@@ -121,4 +121,17 @@ public sealed class Budget : Entity<Guid>, IAggregateRoot
         Status = BudgetStatus.Replaced;
         return Upshot.Success();
     }
+
+    /// <summary>
+    /// Cancels the budget as a saga compensation (CancelBudget), whatever the customer decision was.
+    /// Idempotent: cancelling an already cancelled budget succeeds; a replaced budget cannot be cancelled.
+    /// </summary>
+    public Upshot Cancel()
+    {
+        if (Status == BudgetStatus.Replaced)
+            return Upshot.Fail("Um orçamento substituído não pode ser cancelado.");
+
+        Status = BudgetStatus.Cancelled;
+        return Upshot.Success();
+    }
 }

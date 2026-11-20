@@ -124,6 +124,26 @@ public sealed class BudgetDomainTests
         Assert.Equal(BudgetStatus.Replaced, budget.Status);
     }
 
+    [Fact]
+    public void Cancel_AllowsApprovedBudgetAndIsIdempotent()
+    {
+        var budget = NewBudget();
+        Assert.False(budget.Approve(IssuedAt).IsFailure);
+        Assert.False(budget.Cancel().IsFailure);
+        Assert.Equal(BudgetStatus.Cancelled, budget.Status);
+        Assert.False(budget.Cancel().IsFailure);
+        Assert.Equal(BudgetStatus.Cancelled, budget.Status);
+    }
+
+    [Fact]
+    public void Cancel_RejectsReplacedBudget()
+    {
+        var budget = NewBudget();
+        Assert.False(budget.Replace().IsFailure);
+        Assert.True(budget.Cancel().IsFailure);
+        Assert.Equal(BudgetStatus.Replaced, budget.Status);
+    }
+
     [Theory]
     [InlineData(BudgetStatus.Approved)]
     [InlineData(BudgetStatus.Rejected)]
