@@ -15,6 +15,7 @@ public sealed class Payment
     public decimal Amount { get; set; }
     public PaymentStatus Status { get; set; }
     public string? ExternalId { get; set; }
+    public string Provider { get; set; } = "mercadopago";
     public string? CheckoutUrl { get; set; }
     public Guid CorrelationId { get; set; }
     public DateTime CreatedAt { get; set; }
@@ -28,8 +29,8 @@ public static class PaymentHandlers
     {
         var payment = await session.LoadAsync<Payment>(message.BudgetId, ct).ConfigureAwait(false);
         if (payment is not null) return;
-        payment = new Payment { Id = message.BudgetId, BudgetId = message.BudgetId, WorkOrderId = message.WorkOrderId, Amount = message.Amount, CorrelationId = message.CorrelationId, CreatedAt = DateTime.UtcNow, UpdatedAt = DateTime.UtcNow };
-        if (string.IsNullOrWhiteSpace(options.AccessToken))
+        payment = new Payment { Id = message.BudgetId, BudgetId = message.BudgetId, WorkOrderId = message.WorkOrderId, Amount = message.Amount, CorrelationId = message.CorrelationId, CreatedAt = DateTime.UtcNow, UpdatedAt = DateTime.UtcNow, Provider = gateway is SimulatorGateway ? "simulator" : "mercadopago" };
+        if (gateway is not SimulatorGateway && string.IsNullOrWhiteSpace(options.AccessToken))
         {
             payment.Status = PaymentStatus.Failed;
             session.Store(payment);
@@ -38,9 +39,10 @@ public static class PaymentHandlers
         else
         {
             var preference = await gateway.CreatePreferenceAsync(message.BudgetId.ToString(), message.Amount, message.CustomerEmail, ct).ConfigureAwait(false);
+            if (gateway is SimulatorGateway) payment.ExternalId = preference.Id;
             payment.CheckoutUrl = preference.CheckoutUrl;
             session.Store(payment);
-            await email.SendAsync(new EmailMessage(message.CustomerEmail, message.CustomerEmail, "CatCar - pagamento", preference.CheckoutUrl), ct).ConfigureAwait(false);
+            await email.SendAsync(new EmailMessage(message.CustomerEmail, message.CustomerEmail, gateway is SimulatorGateway ? "CatCar - simulated payment (no money moves)" : "CatCar - pagamento", preference.CheckoutUrl), ct).ConfigureAwait(false);
         }
         await session.SaveChangesAsync(ct).ConfigureAwait(false);
     }

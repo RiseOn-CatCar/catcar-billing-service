@@ -13,6 +13,8 @@ using Wolverine.RabbitMQ;
 
 var builder = WebApplication.CreateBuilder(args);
 builder.AddServiceDefaults();
+var provider = builder.Configuration["Payments:Provider"] ?? "MercadoPago";
+SimulatorEndpoints.ValidateProvider(provider, builder.Environment.IsProduction(), builder.Configuration.GetValue<bool>("Payments:Simulator:AllowInProduction"));
 var database = builder.Configuration.GetConnectionString("billing") ?? throw new InvalidOperationException("ConnectionStrings:billing is required.");
 var messaging = builder.Configuration.GetConnectionString("messaging") ?? throw new InvalidOperationException("ConnectionStrings:messaging is required.");
 builder.Services.AddMarten(options =>
@@ -38,8 +40,13 @@ builder.Host.UseWolverine(options =>
 var paymentOptions = builder.Configuration.GetSection("MercadoPago").Get<MercadoPagoOptions>() ?? new MercadoPagoOptions();
 builder.Services.AddSingleton(paymentOptions);
 builder.Services.AddHttpClient();
-builder.Services.AddTransient<IPaymentGateway, MercadoPagoGateway>();
-builder.Services.AddHostedService<PaymentReconciliation>();
+if (provider == "Simulator")
+    builder.Services.AddTransient<IPaymentGateway, SimulatorGateway>();
+else
+{
+    builder.Services.AddTransient<IPaymentGateway, MercadoPagoGateway>();
+    builder.Services.AddHostedService<PaymentReconciliation>();
+}
 builder.Services.AddHttpClient(MailpitEmailSender.HttpClientName, client =>
     client.BaseAddress = new Uri(builder.Configuration["Communication:MailpitBaseUrl"] ?? throw new InvalidOperationException("Mailpit URL is required.")));
 builder.Services.AddSingleton<IEmailSender>(services =>
@@ -71,6 +78,11 @@ builder.Services.AddAuthentication(JwtBearerDefaults.AuthenticationScheme).AddJw
     };
 });
 var app = builder.Build();
+if (provider == "Simulator")
+{
+    SimulatorEndpoints.LogSimulatorActive(app.Logger);
+    app.MapSimulatorEndpoints();
+}
 if (args.Contains("--migrate", StringComparer.Ordinal))
 {
     await app.Services.GetRequiredService<IDocumentStore>().Storage.ApplyAllConfiguredChangesToDatabaseAsync().ConfigureAwait(false);
@@ -80,6 +92,7 @@ app.UseAuthentication();
 app.UseAuthorization();
 app.MapHealthChecks("/health/live", new() { Predicate = _ => false });
 app.MapHealthChecks("/health/ready");
+app.MapGet("/internal/v1/payment-provider", () => Results.Ok(new { provider = provider == "Simulator" ? "simulator" : "mercadopago" }));
 var billing = app.MapGroup("/api/v1/billing");
 billing.MapGet("/budgets/{id:guid}", async (Guid id, IDocumentSession session, CancellationToken ct) =>
     await session.LoadAsync<Budget>(id, ct).ConfigureAwait(false) is { } budget ? Results.Ok(budget) : Results.NotFound()).RequireAuthorization();
