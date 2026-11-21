@@ -126,14 +126,22 @@ public sealed class BillingIntegrationTests
         HttpResponseMessage? response = null;
         var confirmed = await fixture.Services.ExecuteAndWaitAsync(async () =>
             response = await fixture.Client.PostAsJsonAsync($"/simulator/payments/{approved.BudgetId}/decision", new { decision = "approve" }));
-        using (response) Assert.Equal(HttpStatusCode.OK, response!.StatusCode);
+        using (response)
+        {
+            Assert.Equal(HttpStatusCode.OK, response!.StatusCode);
+            Assert.Equal((int)PaymentStatus.Confirmed, (await response.Content.ReadFromJsonAsync<System.Text.Json.JsonElement>()).GetProperty("status").GetInt32());
+        }
         Assert.StartsWith("SIM-", confirmed.FindSingleTrackedMessageOfType<PaymentConfirmed>().PaymentId);
         await fixture.Services.TrackActivity().InvokeMessageAndWaitAsync(new RefundPayment(approved.WorkOrderId, approved.BudgetId, "cancelled", Guid.NewGuid()));
         var rejected = approved with { WorkOrderId = Guid.NewGuid(), BudgetId = Guid.NewGuid() };
         await fixture.Services.TrackActivity().InvokeMessageAndWaitAsync(rejected);
         var failed = await fixture.Services.ExecuteAndWaitAsync(async () =>
             response = await fixture.Client.PostAsync($"/simulator/payments/{rejected.BudgetId}/decision", new FormUrlEncodedContent(new Dictionary<string, string> { ["decision"] = "reject" })));
-        using (response) Assert.Equal(HttpStatusCode.OK, response!.StatusCode);
+        using (response)
+        {
+            Assert.Equal(HttpStatusCode.OK, response!.StatusCode);
+            Assert.Equal((int)PaymentStatus.Failed, (await response.Content.ReadFromJsonAsync<System.Text.Json.JsonElement>()).GetProperty("status").GetInt32());
+        }
         Assert.Equal(rejected.BudgetId, failed.FindSingleTrackedMessageOfType<PaymentFailed>().BudgetId);
         await using var session = fixture.Store.QuerySession();
         Assert.Equal(PaymentStatus.Refunded, (await session.LoadAsync<Payment>(approved.BudgetId))!.Status);

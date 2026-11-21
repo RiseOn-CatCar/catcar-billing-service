@@ -65,7 +65,8 @@ public static partial class SimulatorEndpoints
             if (payment is null || payment.Provider != "simulator") return Results.NotFound();
             if (decision != "pending")
                 await PaymentHandlers.ApplyAsync(new MercadoPagoPayment($"SIM-{payment.Id}", decision == "approve" ? "approved" : "rejected", null, payment.Id.ToString(), payment.Amount), session, bus, ct).ConfigureAwait(false);
-            return Results.Ok(new { payment.Id, payment.Status, payment.Provider, payment.ExternalId });
+            var decided = await session.LoadAsync<Payment>(paymentId, ct).ConfigureAwait(false) ?? payment;
+            return Results.Ok(new { decided.Id, decided.Status, decided.Provider, decided.ExternalId });
         });
     }
 
