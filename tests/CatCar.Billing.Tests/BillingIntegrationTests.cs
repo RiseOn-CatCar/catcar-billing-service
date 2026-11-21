@@ -108,6 +108,46 @@ public sealed class BillingIntegrationTests
         Assert.Equal(request.CorrelationId, failed.CorrelationId);
     }
 
+    [Fact]
+    public async Task Simulator_DecisionsAndRefund_UsePaymentWorkflow()
+    {
+        await using var fixture = await BillingFixture.StartAsync("Simulator");
+        var approved = new RequestPayment(Guid.NewGuid(), Guid.NewGuid(), 150m, "client@example.test", Guid.NewGuid());
+        await fixture.Services.TrackActivity().InvokeMessageAndWaitAsync(approved);
+        using var page = await fixture.Client.GetAsync($"/simulator/payments/{approved.BudgetId}");
+        Assert.Equal(HttpStatusCode.OK, page.StatusCode);
+        Assert.Contains("SIMULATION - this is NOT Mercado Pago and no money moves", await page.Content.ReadAsStringAsync());
+        using var pending = await fixture.Client.PostAsJsonAsync($"/simulator/payments/{approved.BudgetId}/decision", new { decision = "pending" });
+        Assert.Equal(HttpStatusCode.OK, pending.StatusCode);
+        using var invalid = await fixture.Client.PostAsJsonAsync($"/simulator/payments/{approved.BudgetId}/decision", new { decision = "invalid" });
+        Assert.Equal(HttpStatusCode.BadRequest, invalid.StatusCode);
+        using var missing = await fixture.Client.PostAsJsonAsync($"/simulator/payments/{Guid.NewGuid()}/decision", new { decision = "approve" });
+        Assert.Equal(HttpStatusCode.NotFound, missing.StatusCode);
+        HttpResponseMessage? response = null;
+        var confirmed = await fixture.Services.ExecuteAndWaitAsync(async () =>
+            response = await fixture.Client.PostAsJsonAsync($"/simulator/payments/{approved.BudgetId}/decision", new { decision = "approve" }));
+        using (response) Assert.Equal(HttpStatusCode.OK, response!.StatusCode);
+        Assert.StartsWith("SIM-", confirmed.FindSingleTrackedMessageOfType<PaymentConfirmed>().PaymentId);
+        await fixture.Services.TrackActivity().InvokeMessageAndWaitAsync(new RefundPayment(approved.WorkOrderId, approved.BudgetId, "cancelled", Guid.NewGuid()));
+        var rejected = approved with { WorkOrderId = Guid.NewGuid(), BudgetId = Guid.NewGuid() };
+        await fixture.Services.TrackActivity().InvokeMessageAndWaitAsync(rejected);
+        var failed = await fixture.Services.ExecuteAndWaitAsync(async () =>
+            response = await fixture.Client.PostAsync($"/simulator/payments/{rejected.BudgetId}/decision", new FormUrlEncodedContent(new Dictionary<string, string> { ["decision"] = "reject" })));
+        using (response) Assert.Equal(HttpStatusCode.OK, response!.StatusCode);
+        Assert.Equal(rejected.BudgetId, failed.FindSingleTrackedMessageOfType<PaymentFailed>().BudgetId);
+        await using var session = fixture.Store.QuerySession();
+        Assert.Equal(PaymentStatus.Refunded, (await session.LoadAsync<Payment>(approved.BudgetId))!.Status);
+        Assert.Equal(PaymentStatus.Failed, (await session.LoadAsync<Payment>(rejected.BudgetId))!.Status);
+    }
+
+    [Fact]
+    public async Task Simulator_WhenMercadoPagoSelected_EndpointsAreAbsent()
+    {
+        await using var fixture = await BillingFixture.StartAsync();
+        using var response = await fixture.Client.GetAsync($"/simulator/payments/{Guid.NewGuid()}");
+        Assert.Equal(HttpStatusCode.NotFound, response.StatusCode);
+    }
+
     private static RequestBudget NewBudgetRequest() => new(
         Guid.NewGuid(), Guid.NewGuid(), "Client", "client@example.test",
         [new BudgetLineRequest("Service", Guid.NewGuid(), "Inspection", 75m, 2)], DateTime.UtcNow, Guid.NewGuid());
@@ -122,7 +162,7 @@ public sealed class BillingIntegrationTests
         public IServiceProvider Services => _factory.Services;
         public IDocumentStore Store => Services.GetRequiredService<IDocumentStore>();
 
-        public static async Task<BillingFixture> StartAsync()
+        public static async Task<BillingFixture> StartAsync(string provider = "MercadoPago")
         {
             var fixture = new BillingFixture();
             try
@@ -150,6 +190,7 @@ public sealed class BillingIntegrationTests
                             options.PublishMessage<BudgetIssued>().ToLocalQueue("test-budget-issued");
                             options.PublishMessage<BudgetApproved>().ToLocalQueue("test-budget-approved");
                             options.PublishMessage<PaymentFailed>().ToLocalQueue("test-payment-failed");
+                            options.PublishMessage<PaymentConfirmed>().ToLocalQueue("test-payment-confirmed");
                         });
                         services.AddSingleton<ObservedEvents>();
                     });
@@ -159,10 +200,12 @@ public sealed class BillingIntegrationTests
                 var oldDatabase = Environment.GetEnvironmentVariable("ConnectionStrings__billing");
                 var oldMessaging = Environment.GetEnvironmentVariable("ConnectionStrings__messaging");
                 var oldSecret = Environment.GetEnvironmentVariable("Jwt__Secret");
+                var oldProvider = Environment.GetEnvironmentVariable("Payments__Provider");
                 try
                 {
                     Environment.SetEnvironmentVariable("ConnectionStrings__billing", fixture._database.GetConnectionString());
                     Environment.SetEnvironmentVariable("ConnectionStrings__messaging", "amqp://guest:guest@localhost:5672");
+                    Environment.SetEnvironmentVariable("Payments__Provider", provider);
                     Environment.SetEnvironmentVariable("Jwt__Secret", "integration-test-secret-at-least-32-characters");
                     fixture.Client = fixture._factory.CreateClient();
                 }
@@ -170,6 +213,7 @@ public sealed class BillingIntegrationTests
                 {
                     Environment.SetEnvironmentVariable("ConnectionStrings__billing", oldDatabase);
                     Environment.SetEnvironmentVariable("ConnectionStrings__messaging", oldMessaging);
+                    Environment.SetEnvironmentVariable("Payments__Provider", oldProvider);
                     Environment.SetEnvironmentVariable("Jwt__Secret", oldSecret);
                     StartupLock.Release();
                 }

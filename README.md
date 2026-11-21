@@ -139,6 +139,25 @@ Operacionais: `/health/live` e `/health/ready`. Coleção Postman atualizada: [`
 
 Nunca versione credenciais reais. O esquema do Marten é aplicado com `dotnet run --project src/Api/CatCar.Billing.Api.csproj -- --migrate`; no Kubernetes, pelo Job `billing-service-migration`.
 
+## Payment provider simulator
+
+O simulador é uma **simulação**: nenhum dinheiro é movimentado. Ele existe porque não foi possível criar uma conta sandbox do Mercado Pago. O adaptador real Mercado Pago continua sendo o padrão.
+
+- `Payments:Provider`: `MercadoPago` (padrão) ou `Simulator`; valores desconhecidos impedem a inicialização.
+- `Payments:Simulator:BaseUrl`: URL pública do Billing usada nos links de checkout (padrão `http://localhost:5000`).
+- `Payments:Simulator:AllowInProduction`: padrão `false`; é necessário definir `true` explicitamente para iniciar o simulador em Production.
+
+As rotas do simulador só existem quando selecionado, e a inicialização registra um aviso. A página exibe um alerta; o pagamento registra o provedor `simulator` e identificador externo com prefixo `SIM-`. Depois de receber o link de pagamento por e-mail, abra-o ou use o ID do orçamento/pagamento:
+O endpoint operacional `GET /internal/v1/payment-provider` informa o provedor ativo.
+
+
+```bash
+curl http://localhost:5000/simulator/payments/ID
+curl -X POST http://localhost:5000/simulator/payments/ID/decision -H 'Content-Type: application/json' -d '{"decision":"approve"}'
+curl -X POST http://localhost:5000/simulator/payments/ID/decision -d 'decision=reject'
+curl -X POST http://localhost:5000/simulator/payments/ID/decision -d 'decision=pending'
+```
+
 ## Execução local
 
 **Topologia completa (recomendado):** pelo AppHost do Aspire no `catcar-platform`, que sobe PostgreSQL (`catcar_os`, `catcar_billing`, `catcar_execution`), RabbitMQ, Mailpit, os três serviços e a Function de autenticação. Os e-mails de aprovação aparecem no Mailpit.
